@@ -1,119 +1,149 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
-app.use(cors());
 const mongoose = require("mongoose");
-const port = process.env.PORT || 5000;
-app.use(express.json());
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
-// Connecting to MongoDB
-const db_link = process.env.MONGO_URI
-mongoose.connect(db_link)
-    .then(() => {
-        console.log('db_connected');
-        // insertDummyData(); // Insert dummy data after DB connection
-    })
+const port = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// const allowedOrigins = [
+//     'http://localhost:3000',  // Development origin
+//     'https://myapp.com'       // Production origin
+// ];
+
+app.use(cors({
+    origin: true,
+    credentials: true
+}));
+
+ 
+// Allow credentials for cross-origin requests
+app.use(express.json());
+app.use(cookieParser());
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('db_connected'))
     .catch(err => console.log(err));
 
-// Creating User schema
+// User schema
 const userSchema = new mongoose.Schema({
     name: String,
-    email: String,
+    email: { type: String, unique: true },
     password: String
 });
 const UserData = mongoose.model("DigiUsers", userSchema);
 
-// Creating Device schema
+// Device schema
 const deviceSchema = new mongoose.Schema({
     deviceName: String,
     deviceType: String,
     status: { type: String, default: "offline" },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "DigiUsers" } // Reference to the user who owns the device
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "DigiUsers" }
 });
 const Device = mongoose.model("Devices", deviceSchema);
-// Creatinng the result Schema
-const resultSchema= new mongoose.Schema({
-    name:String,
-    opticalResolution:String,
-    iss:String,
-    concentration:String,
-    brix:String,
-    ploPercent:String,
-    purity:String,
-    date:String,
 
-});
-const DeviceResult = mongoose.model("result",resultSchema);
+// Middleware to authenticate JWT from cookies
+const authenticateJWT = (req, res, next) => {
+    const token = req.cookies.token; // Get the token from cookies
 
-// Define a route
-app.get('/', (req, res) => {
-    res.send('Hello World!');
-});
+    if (!token) return res.status(401).json({ message: "Access denied" });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        res.status(403).json({ message: "Invalid token" });
+    }
+};
 
 // Register User
 app.post('/register', async (req, res) => {
     try {
-        const newUser = new UserData(req.body);  // Create a new user from request body
-        await newUser.save();  // Save the new user to MongoDB
-        res.status(201).json({ message: "User created successfully", user: newUser });
+        const { name, email, password } = req.body;
+
+        // Check if the email already exists
+        const existingUser = await UserData.findOne({ email });
+        if (existingUser) {
+            return res.json({ message: "Email already exists" });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create new user with hashed password
+        const newUser = new UserData({ name, email, password: hashedPassword });
+        await newUser.save();
+
+        res.status(201).json({ message: "User created successfully" });
     } catch (err) {
-        res.status(400).json({ error: 'Error creating user', details: err.message });
+        res.status(500).json({ error: 'Error creating user', details: err.message });
     }
 });
 
-// Login User
-app.post("/login", (req, res) => {
+
+// Login User and set JWT in cookie
+app.post("/login", async (req, res) => {
     const { email, password } = req.body;
 
-    UserData.findOne({ email: email })
-        .then(user => {
-            if (user) {
-                // Check if password matches
-                if (user.password === password) {
-                    res.json({ message: "Success", userId: user._id , userName:user.name});  // Send userId to frontend
-                } else {
-                    res.json({ message: "The password is incorrect" });
-                }
-            } else {
-                res.json({ message: "No user exists" });
-            }
-        })
-        .catch(err => {
-            console.log(err);
-            res.status(500).json({ message: "Error finding user" });
-        });
+    try {
+        const user = await UserData.findOne({ email });
+
+        if (user && await bcrypt.compare(password, user.password)) {
+            // Generate a JWT token
+            const token = jwt.sign({ userId: user._id, userName: user.name }, JWT_SECRET, { expiresIn: '1h' });
+
+            // Set the token in a cookie
+            res.cookie('token', token, {
+                httpOnly: true,  // Prevent access to the cookie via JavaScript
+                secure: process.env.NODE_ENV === 'production',  // Use HTTPS in production
+                maxAge: 60 * 60 * 1000 // 1 hour
+            });
+
+            res.json({ message: "Success" , userName:user.name });
+        } else {
+            res.status(401).json({ message: "Invalid email or password" });
+        }
+    } catch (err) {
+        res.status(500).json({ message: "Error logging in", details: err.message });
+    }
 });
 
-// Add Device for a User
-app.post('/api/user/devices/:userId', async (req, res) => {
+// Logout User - Clear the token cookie
+app.post('/logout', (req, res) => {
+    res.clearCookie('token');
+    res.json({ message: "Logged out successfully" });
+});
+
+// Protected route to add device for a user
+app.post('/api/user/devices/', authenticateJWT, async (req, res) => {
     try {
-        const { userId } = req.params; // Get userId from request parameters
-        const newDevice = new Device({ ...req.body, userId });  // Create a new device with userId
-        await newDevice.save();  // Save the device to MongoDB
+        const  userId  = req.user.userId;
+       
+        const newDevice = new Device({ ...req.body, userId });
+        await newDevice.save();
         res.status(201).json({ success: "Device added successfully", device: newDevice });
     } catch (err) {
         res.status(400).json({ error: 'Error adding device', details: err.message });
     }
 });
 
-app.post('/api/user/devices/:name', async (req, res) => {
-    const {  name } = req.params;
-});
-// Fetch Devices for a Specific User
-app.get('/api/user/devices/:id', async (req, res) => {
-    const userId = req.params.id;  // Extract userId from the route parameter
+// Protected route to fetch devices for a specific user
+app.get('/api/user/devices', authenticateJWT, async (req, res) => {
+    const userId = req.user.userId;  // Extract userId from decoded JWT
 
     try {
-        const devices = await Device.find({ userId: userId });  // Find devices for the user
+        const devices = await Device.find({ userId });
         res.json(devices);
     } catch (error) {
         res.status(500).json({ message: "Unable to fetch devices" });
     }
 });
-
-
-// Route to insert 10 manual DeviceResult records
 
 
 // Start the server
