@@ -16,7 +16,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // ];
 
 app.use(cors({
-    origin:true,
+    origin: true,
     credentials: true
 }));
 
@@ -100,10 +100,9 @@ app.post("/login", async (req, res) => {
 
             // Set the token in a cookie
             res.cookie('token', token, {
-                
                 httpOnly: true,  // Prevent access to the cookie via JavaScript
                 secure: true, 
-                sameSite: 'None',
+                sameSite: 'None', // Use HTTPS in production
                 maxAge: 60 * 60 * 1000 // 1 hour
             });
 
